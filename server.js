@@ -31,7 +31,8 @@ client.connect()
 
 // Select the database
 const db = client.db('ecommerce'); // Use your database name
-const filesCollection = db.collection('files'); // Choose your collection
+const filesCollection = db.collection('files'); // Files collection
+const feedbackCollection = db.collection('feedback'); // Feedback collection
 
 // Setup multer for file upload
 const storage = multer.diskStorage({
@@ -57,7 +58,7 @@ app.post("/upload", upload.single("file"), async (req, res) => {
   formData.append('file', fs.createReadStream(req.file.path)); // Use the file from local disk
 
   // Send the file to another API (could be your own upload endpoint or external)
-  const ocr = await axios.post('http://localhost:8080/api/ocr', formData, {
+  const ocr = await axios.post(`${process.env.ENDPOINT_OCR}/api/ocr`, formData, {
     headers: {
       ...formData.getHeaders(),  // Add headers required for form-data
     },
@@ -141,8 +142,6 @@ app.post("/ask", async (req, res) => {
 
     // Step 5: Retrieve the assistant's response
     const messages = await openai.beta.threads.messages.list(thread.id);
-    // console.log("Messages:", JSON.stringify(messages.data)); // Log all messages for debugging
-
     const assistantResponse = messages.data[0].content[0].text.value;
 
     // Step 6: Respond to the client
@@ -202,7 +201,7 @@ app.delete("/files/:fileId", async (req, res) => {
 app.patch("/files/:fileId", async (req, res) => {
 
   const params = req.params;
-  const {name, file_id} = req.body
+  const { name, file_id } = req.body
 
   try {
     const file = await filesCollection.updateOne(
@@ -219,6 +218,52 @@ app.patch("/files/:fileId", async (req, res) => {
     res.status(200).json({ message: "File updated", data: file });
   } catch (error) {
     res.status(500).json({ error: error.message });
+  }
+});
+
+// Endpoint to create feedback
+app.post("/feedback", async (req, res) => {
+  const { reason, rating, threadId } = req.body;
+
+  try {
+    const createFeedback = await feedbackCollection.insertOne({
+      reason,
+      rating,
+      threadId,
+      createdAt: new Date(),
+      updatedAt: new Date()
+    });
+
+    res.status(200).json({ message: "Feedback created", data: createFeedback });
+  } catch (error) {
+    res.status(500).json({ error: "Something went wrong" });
+  }
+});
+
+// Endpoint to get feedback list
+app.get("/feedback", async (req, res) => {
+  const query = req.query;
+
+  try {
+    const feedback = await feedbackCollection.find(query).sort({createdAt: -1}).toArray();
+    res.status(200).json({ message: "Feedback created", data: feedback });
+  } catch (error) {
+    res.status(500).json({ error: "Something went wrong" });
+  }
+});
+
+// Endpoint to get feedback list
+app.get("/feedback/:threadId", async (req, res) => {
+  const params = req.params;
+
+  try {
+    const feedback = await feedbackCollection.findOne({threadId: params.threadId});
+    const messages = await openai.beta.threads.messages.list(
+      params.threadId
+    );
+    res.status(200).json({ message: "Feedback created", data: feedback, chat_histories: messages.body?.data });
+  } catch (error) {
+    res.status(500).json({ error: "Something went wrong" });
   }
 });
 
