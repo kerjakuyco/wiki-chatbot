@@ -247,13 +247,13 @@ app.patch("/files/:id", async (req, res) => {
 
 // Endpoint to create feedback
 app.post("/feedback", async (req, res) => {
-  const { reason, rating, threadId } = req.body;
+  const { reason, rating, threadIds } = req.body;
 
   try {
     const createFeedback = await feedbackCollection.insertOne({
       reason,
       rating,
-      threadId,
+      threadIds,
       createdAt: new Date(),
       updatedAt: new Date()
     });
@@ -277,15 +277,19 @@ app.get("/feedback", async (req, res) => {
 });
 
 // Endpoint to get feedback details
-app.get("/feedback/:threadId", async (req, res) => {
+app.get("/feedback/:id", async (req, res) => {
   const params = req.params;
+  const messages = [];
 
   try {
-    const feedback = await feedbackCollection.findOne({ threadId: params.threadId });
-    const messages = await openai.beta.threads.messages.list(
-      params.threadId
-    );
-    res.status(200).json({ message: "Feedback created", data: feedback, chat_histories: messages.body?.data });
+    const feedback = await feedbackCollection.findOne({ _id: new ObjectId(params.id) });
+    for (const threadId of feedback.threadIds) {
+      const chat = await openai.beta.threads.messages.list(
+        threadId
+      );
+      messages.push(chat.body?.data);
+    }
+    res.status(200).json({ message: "Feedback created", data: feedback, chat_histories: messages });
   } catch (error) {
     res.status(500).json({ error: "Something went wrong" });
   }
