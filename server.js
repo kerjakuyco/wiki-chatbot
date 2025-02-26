@@ -252,7 +252,7 @@ app.get("/feedback", async (req, res) => {
   }
 });
 
-// Endpoint to get feedback list
+// Endpoint to get feedback details
 app.get("/feedback/:threadId", async (req, res) => {
   const params = req.params;
 
@@ -262,6 +262,17 @@ app.get("/feedback/:threadId", async (req, res) => {
       params.threadId
     );
     res.status(200).json({ message: "Feedback created", data: feedback, chat_histories: messages.body?.data });
+  } catch (error) {
+    res.status(500).json({ error: "Something went wrong" });
+  }
+});
+
+// Endpoint to get feedback summary
+app.get("/feedback-summary/", async (req, res) => {
+  try {
+    const totalYes = await feedbackCollection.countDocuments({rating: true});
+    const totalNo = await feedbackCollection.countDocuments({rating: false});
+    res.status(200).json({ message: "Feedback retrieved", data: { totalYes, totalNo, total: totalYes + totalNo } });
   } catch (error) {
     res.status(500).json({ error: "Something went wrong" });
   }
