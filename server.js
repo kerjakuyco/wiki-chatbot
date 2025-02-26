@@ -1,4 +1,5 @@
 const express = require("express");
+const cors = require('cors');
 const multer = require("multer");
 const { OpenAI } = require("openai");
 const { Client } = require('@elastic/elasticsearch');
@@ -21,6 +22,9 @@ const openai = new OpenAI({
 
 // Initialize Express app
 const app = express();
+
+// Enable CORS for all routes and all origins
+app.use(cors());
 
 // Create a MongoClient and connect to MongoDB
 const client = new MongoClient(uri, {});
