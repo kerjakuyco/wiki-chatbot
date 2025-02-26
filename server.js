@@ -1,6 +1,7 @@
 const express = require("express");
 const multer = require("multer");
 const { OpenAI } = require("openai");
+const { Client } = require('@elastic/elasticsearch');
 const dotenv = require("dotenv");
 const fs = require("fs");
 const path = require('path');
@@ -24,6 +25,12 @@ const app = express();
 // Create a MongoClient and connect to MongoDB
 const client = new MongoClient(uri, {});
 
+// Create a Elastic Search client
+const elasticClient = new Client({
+  node: process.env.ELASTIC_HOST,
+  auth: { apiKey: process.env.ELASTIC_API_KEY },
+});
+
 // Connect to the database
 client.connect()
   .then(() => console.log('Connected to MongoDB!'))
@@ -34,6 +41,9 @@ const db = client.db('ecommerce'); // Use your database name
 const filesCollection = db.collection('files'); // Files collection
 const feedbackCollection = db.collection('feedback'); // Feedback collection
 const unAnsweredCollection = db.collection('un_answered'); // UnAnswered collection
+
+// Define index name
+const INDEX_NAME = 'conversations';
 
 // Setup multer for file upload
 const storage = multer.diskStorage({
@@ -118,6 +128,8 @@ app.post("/upload", upload.array("files"), async (req, res) => {
 // Endpoint to ask a question to the assistant
 app.post("/ask", async (req, res) => {
   const { threadId, question } = req.body;
+  const elasticConfig = process.env.ELASTIC_TOGGLE;
+  const elasticToggle = elasticConfig === 'true' ? true : false;
 
   try {
     // Step 1: Create or reuse a thread
@@ -126,6 +138,15 @@ app.post("/ask", async (req, res) => {
       thread = await openai.beta.threads.create();
     } else {
       thread = { id: threadId };
+    }
+
+    if (elasticToggle) {
+      const elasticCache = await elasticFetch(question);
+
+      if (elasticCache?.hits[0]?._score > 1) {
+        const assistantResponse = elasticCache?.hits[0]?._source.answer;
+        return res.status(200).json({ response: assistantResponse, threadId: thread.id });
+      }
     }
 
     // Step 2: Add the user's question to the thread
@@ -150,6 +171,18 @@ app.post("/ask", async (req, res) => {
     // Step 5: Retrieve the assistant's response
     const messages = await openai.beta.threads.messages.list(thread.id);
     const assistantResponse = messages.data[0].content[0].text.value;
+    const questionResponse = messages.data[1].content[0].text.value;
+
+    if (elasticToggle) {
+      const elasticPayload = {
+        question: questionResponse,
+        answer: assistantResponse,
+        thread_id: thread.id,
+        createdAt: new Date(),
+      };
+
+      await elasticStore(elasticPayload);
+    }
 
     const unansweredPhrases = [
       "I don't know",
@@ -161,8 +194,7 @@ app.post("/ask", async (req, res) => {
     ];
 
     if (unansweredPhrases.some(phrase => assistantResponse.includes(phrase))) {
-      const question = messages.data[1].content[0].text.value;
-      await saveUnansweredChat(question);
+      await saveUnansweredChat(questionResponse);
     }
 
     // Step 6: Respond to the client
@@ -338,6 +370,73 @@ app.patch("/unanswered/:id", async (req, res) => {
     res.status(500).json({ error: "Something went wrong" });
   }
 });
+
+// Function to fetch data from Elastic Search
+async function elasticFetch(question) {
+  const body = {
+    "filter": {
+      "multi_match": {
+        "query": question,
+        "fields": ["question"],
+        "fuzziness": "AUTO",
+        "prefix_length": 1,
+        "max_expansions": 50
+      }
+    },
+    "options": {}
+  }
+
+  try {
+    const { size = 10, from = 0, sort = ["_score"], min_score = 0 } = body.options;
+
+    const response = await elasticClient.search({
+      index: INDEX_NAME,
+      body: {
+        from,
+        size,
+        sort,
+        query: body.filter
+      }
+    });
+
+    return {
+      total: response.hits.total.value,
+      hits: response.hits.hits,
+      timeTook: response.took
+    };
+  } catch (error) {
+    console.error('Error searching documents:', error);
+    throw error;
+  }
+}
+
+// Function to save data to Elastic Search
+async function elasticStore(body = {}, id = '') {
+  try {
+    const params = {
+      index: INDEX_NAME,
+      body: {
+        question: body.question,
+        answer: body.answer,
+        thread_id: body.thread_id,
+        created_at: new Date().toISOString()
+      },
+      // refresh: true // Makes the document available for search immediately
+    };
+
+    // If an ID is provided, use it; otherwise, Elasticsearch will generate one
+    if (id) {
+      params.id = id;
+    }
+    const response = await elasticClient.index(params);
+
+    console.log(`Document indexed successfully with ID: ${response._id}`);
+    return response;
+  } catch (error) {
+    console.error('Error saving document:', error);
+    throw error;
+  }
+}
 
 // Function to save a base64 string as a file, keeping original name and format
 function saveBase64AsFile(base64String, originalName, fileFormat) {
