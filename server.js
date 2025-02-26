@@ -52,33 +52,35 @@ const upload = multer({ storage: storage });
 app.use(express.json());
 
 // Endpoint to upload a file and attach it to the existing assistant
-app.post("/upload", upload.single("file"), async (req, res) => {
+app.post("/upload", upload.array("files"), async (req, res) => {
 
-  // Create form-data instance for the outgoing request
-  const formData = new FormData();
-  formData.append('file', fs.createReadStream(req.file.path)); // Use the file from local disk
+  const fileIds = [];
 
-  // Send the file to another API (could be your own upload endpoint or external)
-  const ocr = await axios.post(`${process.env.ENDPOINT_OCR}/api/ocr`, formData, {
-    headers: {
-      ...formData.getHeaders(),  // Add headers required for form-data
-    },
-  });
+  for (const file of req.files) {
+    // Create form-data instance for the outgoing request
+    const formData = new FormData();
+    formData.append('file', fs.createReadStream(file.path)); // Use the file from local disk
 
-  const filePath = saveBase64AsFile(ocr.data.data, ocr.data.filename, ocr.data.content_type);
+    // Send the file to another API (could be your own upload endpoint or external)
+    const ocr = await axios.post(`${process.env.ENDPOINT_OCR}/api/ocr`, formData, {
+      headers: {
+        ...formData.getHeaders(),  // Add headers required for form-data
+      },
+    });
 
-  try {
+    const filePath = saveBase64AsFile(ocr.data.data, ocr.data.filename, ocr.data.content_type);
+
     // Step 1: Upload the file to OpenAI
-    const file = await openai.files.create({
+    const fileToOpenAI = await openai.files.create({
       file: fs.createReadStream(filePath),
       purpose: "assistants",
     });
 
     // Step 2: Attach the file to the existing assistant
-    const assistant = await openai.beta.assistants.update(
+    await openai.beta.assistants.update(
       process.env.ASSISTANT_ID, // Use your existing assistant ID
       {
-        file_ids: [file.id], // Attach the uploaded file
+        file_ids: [fileToOpenAI.id], // Attach the uploaded file
       }
     );
 
@@ -86,24 +88,27 @@ app.post("/upload", upload.single("file"), async (req, res) => {
     await openai.beta.vectorStores.files.create(
       process.env.VECTOR_STORE_ID,
       {
-        file_id: file.id,
+        file_id: fileToOpenAI.id,
       }
     );
 
     // Clean up: Delete the uploaded file from the server
-    fs.unlinkSync(req.file.path);
+    fs.unlinkSync(file.path);
+    // Collect file IDs
+    fileIds.push(fileToOpenAI.id);
+  }
 
+  try {
     // Save to database
     await filesCollection.insertOne({
       name: req.body.name,
-      originalFilename: ocr.data.filename,
-      file_id: file.id,
+      file_ids: fileIds,
       createdAt: new Date(),
       updatedAt: new Date()
     });
 
     // Respond with success and file ID
-    res.status(200).json({ message: "File uploaded and attached to assistant", fileId: file.id });
+    res.status(200).json({ message: "File uploaded and attached to assistant", fileIds: fileIds });
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
@@ -153,7 +158,7 @@ app.post("/ask", async (req, res) => {
       "saya tidak yakin",
       "Saya tidak menemukan informasi"
     ];
-    
+
     if (unansweredPhrases.some(phrase => assistantResponse.includes(phrase))) {
       const question = messages.data[1].content[0].text.value;
       await saveUnansweredChat(question);
@@ -182,12 +187,12 @@ app.get("/files", async (req, res) => {
 });
 
 // Endpoint to get file details
-app.get("/files/:fileId", async (req, res) => {
+app.get("/files/:id", async (req, res) => {
 
   const params = req.params;
 
   try {
-    const file = await filesCollection.findOne({ file_id: params.fileId });
+    const file = await filesCollection.findOne({ _id: new ObjectId(params.id) });
 
     res.status(200).json({ message: "File retrieved", data: file });
   } catch (error) {
@@ -196,16 +201,19 @@ app.get("/files/:fileId", async (req, res) => {
 });
 
 // Endpoint to delete file
-app.delete("/files/:fileId", async (req, res) => {
+app.delete("/files/:id", async (req, res) => {
 
   const params = req.params;
 
   try {
-    const file = await filesCollection.deleteOne({ file_id: params.fileId });
-    await openai.beta.vectorStores.files.del(
-      process.env.VECTOR_STORE_ID,
-      params.fileId
-    );
+    const file = await filesCollection.findOne({ _id: new ObjectId(params.id) });
+    for (const fileId of file.file_ids) {
+      await openai.beta.vectorStores.files.del(
+        process.env.VECTOR_STORE_ID,
+        fileId
+      );
+    }
+    await filesCollection.deleteOne({ _id: new ObjectId(params.id) });
 
     res.status(200).json({ message: "File deleted", data: file });
   } catch (error) {
@@ -214,18 +222,18 @@ app.delete("/files/:fileId", async (req, res) => {
 });
 
 // Endpoint to update file
-app.patch("/files/:fileId", async (req, res) => {
+app.patch("/files/:id", async (req, res) => {
 
   const params = req.params;
-  const { name, file_id } = req.body
+  const { name, file_ids } = req.body
 
   try {
     const file = await filesCollection.updateOne(
-      { file_id: params.fileId },
+      { _id: new ObjectId(params.id) },
       {
         $set: {
           name,
-          file_id,
+          file_ids,
           updatedAt: new Date()
         }
       }
