@@ -7,9 +7,11 @@ const path = require('path');
 const e = require("express");
 const FormData = require('form-data');
 const axios = require('axios');
+const { MongoClient } = require('mongodb');
 
 // Load environment variables
 dotenv.config();
+const uri = process.env.DB_LOCAL_CONNECTION;
 
 // Initialize OpenAI client
 const openai = new OpenAI({
@@ -18,6 +20,19 @@ const openai = new OpenAI({
 
 // Initialize Express app
 const app = express();
+
+// Create a MongoClient and connect to MongoDB
+const client = new MongoClient(uri, {});
+
+// Connect to the database
+client.connect()
+  .then(() => console.log('Connected to MongoDB!'))
+  .catch((err) => console.error('Failed to connect to MongoDB', err));
+
+// Select the database
+const db = client.db('ecommerce'); // Use your database name
+const filesCollection = db.collection('files'); // Choose your collection
+
 // Setup multer for file upload
 const storage = multer.diskStorage({
   destination: function (req, file, cb) {
@@ -76,6 +91,15 @@ app.post("/upload", upload.single("file"), async (req, res) => {
     // Clean up: Delete the uploaded file from the server
     fs.unlinkSync(req.file.path);
 
+    // Save to database
+    await filesCollection.insertOne({
+      name: req.body.name,
+      originalFilename: ocr.data.filename,
+      file_id: file.id,
+      createdAt: new Date(),
+      updatedAt: new Date()
+    });
+
     // Respond with success and file ID
     res.status(200).json({ message: "File uploaded and attached to assistant", fileId: file.id });
   } catch (error) {
@@ -125,6 +149,76 @@ app.post("/ask", async (req, res) => {
     res.status(200).json({ response: assistantResponse, threadId: thread.id });
   } catch (error) {
     res.status(500).json({ error: "Something went wrong" });
+  }
+});
+
+// Endpoint to get file list
+app.get("/files", async (req, res) => {
+
+  const query = req.query;
+
+  try {
+    const files = await filesCollection.find(query).sort({ createdAt: -1 }).toArray();
+
+    res.status(200).json({ message: "Files retrieved", data: files });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Endpoint to get file details
+app.get("/files/:fileId", async (req, res) => {
+
+  const params = req.params;
+
+  try {
+    const file = await filesCollection.findOne({ file_id: params.fileId });
+
+    res.status(200).json({ message: "File retrieved", data: file });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Endpoint to delete file
+app.delete("/files/:fileId", async (req, res) => {
+
+  const params = req.params;
+
+  try {
+    const file = await filesCollection.deleteOne({ file_id: params.fileId });
+    await openai.beta.vectorStores.files.del(
+      process.env.VECTOR_STORE_ID,
+      params.fileId
+    );
+
+    res.status(200).json({ message: "File deleted", data: file });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Endpoint to update file
+app.patch("/files/:fileId", async (req, res) => {
+
+  const params = req.params;
+  const {name, file_id} = req.body
+
+  try {
+    const file = await filesCollection.updateOne(
+      { file_id: params.fileId },
+      {
+        $set: {
+          name,
+          file_id,
+          updatedAt: new Date()
+        }
+      }
+    );
+
+    res.status(200).json({ message: "File updated", data: file });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
   }
 });
 
