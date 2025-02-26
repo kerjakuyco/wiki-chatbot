@@ -48,8 +48,9 @@ const storage = multer.diskStorage({
 
 const upload = multer({ storage: storage });
 
-// Middleware to parse JSON
-app.use(express.json());
+// Increase payload size limit (e.g., 50MB)
+app.use(express.json({ limit: '50mb' }));
+app.use(express.urlencoded({ limit: '50mb', extended: true }));
 
 // Endpoint to upload a file and attach it to the existing assistant
 app.post("/upload", upload.array("files"), async (req, res) => {
@@ -84,14 +85,6 @@ app.post("/upload", upload.array("files"), async (req, res) => {
       }
     );
 
-    // Step 3: Create vector store
-    await openai.beta.vectorStores.files.create(
-      process.env.VECTOR_STORE_ID,
-      {
-        file_id: fileToOpenAI.id,
-      }
-    );
-
     // Clean up: Delete the uploaded file from the server
     fs.unlinkSync(file.path);
     // Collect file IDs
@@ -99,7 +92,15 @@ app.post("/upload", upload.array("files"), async (req, res) => {
   }
 
   try {
-    // Save to database
+    // Step 3: Create vector store
+    await openai.beta.vectorStores.fileBatches.create(
+      process.env.VECTOR_STORE_ID,
+      {
+        file_ids: fileIds,
+      }
+    );
+
+    //Step 4: Save to database
     await filesCollection.insertOne({
       name: req.body.name,
       file_ids: fileIds,
