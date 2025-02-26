@@ -128,7 +128,7 @@ app.post("/upload", upload.array("files"), async (req, res) => {
 // Endpoint to ask a question to the assistant
 app.post("/ask", async (req, res) => {
   const { threadId, question } = req.body;
-  const elasticConfig = process.env.ELASTIC_TOGGLE;
+  const elasticConfig = process.env.ELASTIC_CONFIG;
   const elasticToggle = elasticConfig === 'true' ? true : false;
 
   try {
