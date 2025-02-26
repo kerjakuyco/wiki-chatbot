@@ -7,7 +7,7 @@ const path = require('path');
 const e = require("express");
 const FormData = require('form-data');
 const axios = require('axios');
-const { MongoClient } = require('mongodb');
+const { MongoClient, ObjectId } = require('mongodb');
 
 // Load environment variables
 dotenv.config();
@@ -33,6 +33,7 @@ client.connect()
 const db = client.db('ecommerce'); // Use your database name
 const filesCollection = db.collection('files'); // Files collection
 const feedbackCollection = db.collection('feedback'); // Feedback collection
+const unAnsweredCollection = db.collection('un_answered'); // UnAnswered collection
 
 // Setup multer for file upload
 const storage = multer.diskStorage({
@@ -144,9 +145,24 @@ app.post("/ask", async (req, res) => {
     const messages = await openai.beta.threads.messages.list(thread.id);
     const assistantResponse = messages.data[0].content[0].text.value;
 
+    const unansweredPhrases = [
+      "I don't know",
+      "I'm not sure",
+      "I don't have specific information",
+      "saya tidak tahu",
+      "saya tidak yakin",
+      "Saya tidak menemukan informasi"
+    ];
+    
+    if (unansweredPhrases.some(phrase => assistantResponse.includes(phrase))) {
+      const question = messages.data[1].content[0].text.value;
+      await saveUnansweredChat(question);
+    }
+
     // Step 6: Respond to the client
     res.status(200).json({ response: assistantResponse, threadId: thread.id });
   } catch (error) {
+    console.log("errpr asking AI", error);
     res.status(500).json({ error: "Something went wrong" });
   }
 });
@@ -245,7 +261,7 @@ app.get("/feedback", async (req, res) => {
   const query = req.query;
 
   try {
-    const feedback = await feedbackCollection.find(query).sort({createdAt: -1}).toArray();
+    const feedback = await feedbackCollection.find(query).sort({ createdAt: -1 }).toArray();
     res.status(200).json({ message: "Feedback created", data: feedback });
   } catch (error) {
     res.status(500).json({ error: "Something went wrong" });
@@ -257,7 +273,7 @@ app.get("/feedback/:threadId", async (req, res) => {
   const params = req.params;
 
   try {
-    const feedback = await feedbackCollection.findOne({threadId: params.threadId});
+    const feedback = await feedbackCollection.findOne({ threadId: params.threadId });
     const messages = await openai.beta.threads.messages.list(
       params.threadId
     );
@@ -270,9 +286,41 @@ app.get("/feedback/:threadId", async (req, res) => {
 // Endpoint to get feedback summary
 app.get("/feedback-summary/", async (req, res) => {
   try {
-    const totalYes = await feedbackCollection.countDocuments({rating: true});
-    const totalNo = await feedbackCollection.countDocuments({rating: false});
+    const totalYes = await feedbackCollection.countDocuments({ rating: true });
+    const totalNo = await feedbackCollection.countDocuments({ rating: false });
     res.status(200).json({ message: "Feedback retrieved", data: { totalYes, totalNo, total: totalYes + totalNo } });
+  } catch (error) {
+    res.status(500).json({ error: "Something went wrong" });
+  }
+});
+
+// Endpoint to get unanswered list
+app.get("/unanswered", async (req, res) => {
+  const query = req.query;
+
+  try {
+    const unanswered = await unAnsweredCollection.find(query).sort({ createdAt: -1 }).toArray();
+    res.status(200).json({ message: "Unanswered retrieved", data: unanswered });
+  } catch (error) {
+    res.status(500).json({ error: "Something went wrong" });
+  }
+});
+
+// Endpoint to get unanswered list
+app.patch("/unanswered/:id", async (req, res) => {
+  const params = req.params;
+  const { update } = req.body
+
+  try {
+    const feedback = await unAnsweredCollection.updateOne(
+      { _id: new ObjectId(params.id) },
+      {
+        $set: {
+          updated: update,
+          updatedAt: new Date()
+        }
+      })
+    res.status(200).json({ message: "Unanswered updated", data: feedback });
   } catch (error) {
     res.status(500).json({ error: "Something went wrong" });
   }
@@ -293,6 +341,21 @@ function saveBase64AsFile(base64String, originalName, fileFormat) {
   fs.writeFileSync(filePath, buffer);
 
   return filePath;
+}
+
+async function saveUnansweredChat(question) {
+  try {
+    await unAnsweredCollection.insertOne(
+      {
+        question: question,
+        updated: false,
+        createdAt: new Date(),
+        updatedAt: new Date()
+      });
+    console.log('unanswered chat saved', question);
+  } catch (error) {
+    console.log("error saved chat", error);
+  }
 }
 
 // Start the server
