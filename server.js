@@ -5,6 +5,8 @@ const dotenv = require("dotenv");
 const fs = require("fs");
 const path = require('path');
 const e = require("express");
+const FormData = require('form-data');
+const axios = require('axios');
 
 // Load environment variables
 dotenv.config();
@@ -34,10 +36,24 @@ app.use(express.json());
 
 // Endpoint to upload a file and attach it to the existing assistant
 app.post("/upload", upload.single("file"), async (req, res) => {
+
+  // Create form-data instance for the outgoing request
+  const formData = new FormData();
+  formData.append('file', fs.createReadStream(req.file.path)); // Use the file from local disk
+
+  // Send the file to another API (could be your own upload endpoint or external)
+  const ocr = await axios.post('http://localhost:8080/api/ocr', formData, {
+    headers: {
+      ...formData.getHeaders(),  // Add headers required for form-data
+    },
+  });
+
+  const filePath = saveBase64AsFile(ocr.data.data, ocr.data.filename, ocr.data.content_type);
+
   try {
     // Step 1: Upload the file to OpenAI
     const file = await openai.files.create({
-      file: fs.createReadStream(req.file.path),
+      file: fs.createReadStream(filePath),
       purpose: "assistants",
     });
 
@@ -111,6 +127,23 @@ app.post("/ask", async (req, res) => {
     res.status(500).json({ error: "Something went wrong" });
   }
 });
+
+// Function to save a base64 string as a file, keeping original name and format
+function saveBase64AsFile(base64String, originalName, fileFormat) {
+  // Convert base64 string to buffer
+  const buffer = Buffer.from(base64String, 'base64');
+
+  // Get the file extension from the original name if needed
+  const extension = fileFormat || path.extname(originalName);
+
+  // Create a file path with the original file name and extension
+  const filePath = path.join(__dirname, 'uploads', originalName);
+
+  // Write the buffer to a file
+  fs.writeFileSync(filePath, buffer);
+
+  return filePath;
+}
 
 // Start the server
 const PORT = process.env.PORT || 3000;
